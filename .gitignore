@@ -1,0 +1,15 @@
+__pycache__/
+.ruff_cache/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+/data/
+/runs/
+/logs/
+/artifacts/
+*.log
+*.pdf
+.env
+.env.*
