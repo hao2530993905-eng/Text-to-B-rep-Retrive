@@ -58,16 +58,7 @@ The included [CAD checkpoint](model/lora_cad.pt) contains the CAD encoder weight
 
 ### Architecture
 
-```mermaid
-graph TB
-  accTitle: Text-to-CAD retrieval
-  accDescr: CAD geometry and text are encoded into a shared space and ranked by cosine similarity.
-  CAD[CAD sequences] --> Descriptor[Spectral descriptors]
-  Descriptor --> CADEncoder[CAD encoder]
-  Text[Text query] --> TextEncoder[Qwen3 with LoRA]
-  CADEncoder --> Similarity[Cosine similarity]
-  TextEncoder --> Similarity
-```
+![Text-to-B-rep retrieval through invariant spectral geometry](assets/method-overview.png)
 
 ---
 
