@@ -81,7 +81,9 @@ def main(argv=None):
         text_encoder.eval()
         cad_tower.eval()
         values = (data["vectors"] - checkpoint["mean"]) / checkpoint["std"]
-        local_rows = data["rows"]
+        lower = rank * len(data["rows"]) // dist.get_world_size()
+        upper = (rank + 1) * len(data["rows"]) // dist.get_world_size()
+        local_rows = data["rows"][lower:upper]
         local_queries = torch.zeros(len(local_rows), 512, device=device)
         with torch.no_grad():
             gallery = F.normalize(cad_tower(values.to(device)), dim=-1).cpu()
