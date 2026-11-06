@@ -1,0 +1,8 @@
+cadquery-ocp>=7.7
+numpy>=1.26
+pandas>=2.0
+pyarrow>=16
+scipy>=1.11
+tqdm>=4.66
+transformers>=4.51
+peft>=0.15
