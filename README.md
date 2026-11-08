@@ -135,6 +135,53 @@ The 4B evaluation reads the saved text-feature cache. The 0.6B evaluation reads 
 
 ---
 
+### Background runs and logs
+Create the log directory:
+
+```bash
+mkdir -p logs
+```
+
+Start 4B feature encoding:
+
+```bash
+nohup env CUDA_VISIBLE_DEVICES=0 bash scripts/encode_text_4b.sh > logs/encode_4b.log 2>&1 &
+```
+
+Start 4B frozen training after encoding finishes:
+
+```bash
+nohup env CUDA_VISIBLE_DEVICES=0 bash scripts/train_text2cad_4b_frozen.sh > logs/train_4b_frozen.log 2>&1 &
+```
+
+Start 0.6B LoRA training:
+
+```bash
+nohup env CUDA_VISIBLE_DEVICES=0 bash scripts/train_text2cad_06b_lora.sh > logs/train_06b_lora.log 2>&1 &
+```
+
+Follow a log:
+
+```bash
+tail -f logs/train_4b_frozen.log
+```
+
+```bash
+tail -f logs/train_06b_lora.log
+```
+
+Run evaluation after training completes:
+
+```bash
+bash scripts/evaluate_text2cad_4b_frozen.sh
+```
+
+```bash
+bash scripts/evaluate_text2cad_06b_lora.sh
+```
+
+---
+
 ### Output files
 
 | File | Purpose |
