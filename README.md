@@ -9,7 +9,7 @@ Text-to-CAD retrieval on Text2CAD with spectral CAD descriptors and Qwen3-Embedd
 This repository contains two Text2CAD experiments:
 
 1. Qwen3-Embedding-4B with a frozen text encoder, FP32 projection training, 30 epochs, and global batch 512.
-2. Qwen3-Embedding-0.6B with LoRA, 30 epochs, global batch 512, and FP32 training.
+2. Qwen3-Embedding-0.6B with LoRA, 30 epochs, global batch 1024, and FP32 training.
 
 Both experiments use the same 280-D geometric descriptor, residual CAD tower, symmetric one-to-one contrastive loss, and pooled retrieval evaluation. No additional prediction heads or grouping logic are present.
 
@@ -88,7 +88,7 @@ The expected output is stored under `runs/text2cad/4b_frozen`.
 ---
 
 ### 0.6B LoRA experiment
-The LoRA preset follows the 0.6B frozen run for epochs, batch size, schedule, precision, seed, and text length.
+The LoRA preset follows the 0.6B frozen run for epochs, schedule, precision, seed, and text length. It uses eight GPUs with 128 samples per device.
 
 Train:
 
@@ -106,11 +106,11 @@ The LoRA preset uses:
 
 - Qwen3-Embedding-0.6B
 - eight GPUs
-- 64 samples per device
-- 512 samples per global step
-- 1,215 steps per epoch
+- 128 samples per device
+- 1,024 samples per global step
+- 607 steps per epoch
 - 30 epochs
-- 36,450 optimizer steps
+- 18,210 optimizer steps
 - backbone learning rate `1e-4`
 - head and CAD learning rate `3e-4`
 - LoRA rank `16`

@@ -4,7 +4,7 @@ MODEL="${MODEL:-models/Qwen3-Embedding-0.6B}"
 OUTPUT_DIR="${OUTPUT_DIR:-runs/text2cad/06b_lora}"
 EPOCHS="${EPOCHS:-30}"
 NPROC="${NPROC:-8}"
-BATCH_PER_DEVICE="${BATCH_PER_DEVICE:-64}"
+BATCH_PER_DEVICE="${BATCH_PER_DEVICE:-128}"
 
 "$PYTHON_BIN" -m torch.distributed.run \
   --standalone \
