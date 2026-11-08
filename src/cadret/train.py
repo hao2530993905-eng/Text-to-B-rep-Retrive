@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import os
 from pathlib import Path
 
@@ -14,7 +15,7 @@ from tqdm import tqdm
 
 from .config import DATASET_LEVELS, INSTRUCTION
 from .data import load_split
-from .model import CADTower, TextEncoder
+from .model import CADTower, TextEncoder, TextProjection
 from .runtime import (
     gather_with_gradient,
     save_checkpoint,
@@ -54,12 +55,16 @@ def build_parser():
     parser.add_argument("--cache", type=Path, required=True)
     parser.add_argument("--model", required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--tuning", choices=("lora", "frozen"), default="lora")
+    parser.add_argument("--precision", choices=("fp32", "bf16"), default="fp32")
+    parser.add_argument("--text-features", type=Path)
     parser.add_argument("--levels")
     parser.add_argument("--epochs", type=positive_int, default=3)
     parser.add_argument("--per-device-batch", type=positive_int, required=True)
     parser.add_argument("--backbone-lr", type=positive_float, default=1e-4)
     parser.add_argument("--head-lr", type=positive_float, default=5e-4)
     parser.add_argument("--temperature", type=positive_float, default=0.05)
+    parser.add_argument("--warmup-fraction", type=positive_float, default=0.05)
     parser.add_argument("--max-length", type=positive_int, default=320)
     parser.add_argument("--lora-rank", type=positive_int, default=32)
     parser.add_argument("--lora-alpha", type=positive_int, default=64)
@@ -70,8 +75,10 @@ def build_parser():
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
-    if args.lora_alpha < args.lora_rank:
+    if args.tuning == "lora" and args.lora_alpha < args.lora_rank:
         raise ValueError("lora alpha must be at least lora rank")
+    if args.tuning == "frozen" and (args.text_features is None or not args.text_features.is_file()):
+        raise FileNotFoundError("--text-features is required for frozen tuning")
     if not args.cache.is_file():
         raise FileNotFoundError(f"cache not found: {args.cache}")
     if not torch.cuda.is_available():
@@ -93,12 +100,12 @@ def main(argv=None):
         world_size = dist.get_world_size()
         primary = rank == 0
         seed_everything(args.seed)
-        from transformers import AutoTokenizer
-
-        tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
-        tokenizer.padding_side = "left"
         global_batch = args.per_device_batch * world_size
-        steps_per_epoch = len(data["rows"]) // global_batch
+        steps_per_epoch = (
+            math.ceil(len(data["rows"]) / global_batch)
+            if world_size == 1
+            else len(data["rows"]) // global_batch
+        )
         if steps_per_epoch < 1:
             raise ValueError("global batch is larger than the training data")
         planned_steps = steps_per_epoch * args.epochs
@@ -108,6 +115,25 @@ def main(argv=None):
         mean = data["vectors"].mean(0)
         std = data["vectors"].std(0).clamp(min=1e-4)
         vectors = ((data["vectors"] - mean) / std).to(device)
+        tokenizer = None
+        text_features = None
+        train_feature_indices = None
+        if args.tuning == "lora":
+            from transformers import AutoTokenizer
+
+            tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
+            tokenizer.padding_side = "left"
+        else:
+            cached_features = torch.load(
+                args.text_features,
+                map_location="cpu",
+                weights_only=False,
+            )
+            if cached_features["dataset"] != args.dataset:
+                raise ValueError("text feature dataset does not match --dataset")
+            lookup = {text: index for index, text in enumerate(cached_features["texts"])}
+            train_feature_indices = [lookup[row[2]] for row in data["rows"]]
+            text_features = cached_features["features"].float().to(device)
         if primary:
             args.output_dir.mkdir(parents=True, exist_ok=True)
             config = {
@@ -129,49 +155,62 @@ def main(argv=None):
             )
         dist.barrier()
         cad_tower = CADTower().to(device)
-        text_encoder = TextEncoder(
-            args.model,
-            lora_rank=args.lora_rank,
-            lora_alpha=args.lora_alpha,
-        ).to(device)
-        invalid = [
-            name
-            for name, parameter in text_encoder.backbone.named_parameters()
-            if parameter.requires_grad and "lora_" not in name
-        ]
-        if invalid:
-            raise RuntimeError("non-adapter backbone parameters are trainable")
+        dtype = torch.float32 if args.precision == "fp32" else torch.bfloat16
+        if args.tuning == "lora":
+            text_model = TextEncoder(
+                args.model,
+                lora_rank=args.lora_rank,
+                lora_alpha=args.lora_alpha,
+                dtype=dtype,
+            ).to(device)
+            invalid = [
+                name
+                for name, parameter in text_model.backbone.named_parameters()
+                if parameter.requires_grad and "lora_" not in name
+            ]
+            if invalid:
+                raise RuntimeError("non-adapter backbone parameters are trainable")
+        else:
+            text_model = TextProjection(text_features.shape[1]).to(device)
         cad_tower = DistributedDataParallel(cad_tower, device_ids=[local_rank])
-        text_encoder = DistributedDataParallel(text_encoder, device_ids=[local_rank])
-        backbone_parameters = [
-            parameter
-            for name, parameter in text_encoder.named_parameters()
-            if parameter.requires_grad and ".backbone." in name
-        ]
+        text_model = DistributedDataParallel(text_model, device_ids=[local_rank])
+        parameter_groups = []
+        learning_rates = []
+        if args.tuning == "lora":
+            backbone_parameters = [
+                parameter
+                for name, parameter in text_model.named_parameters()
+                if parameter.requires_grad and ".backbone." in name
+            ]
+            parameter_groups.append({"params": backbone_parameters, "lr": args.backbone_lr})
+            learning_rates.append(args.backbone_lr)
         head_parameters = [
             parameter
-            for name, parameter in text_encoder.named_parameters()
+            for name, parameter in text_model.named_parameters()
             if parameter.requires_grad and ".backbone." not in name
         ]
-        optimizer = torch.optim.AdamW(
+        parameter_groups.extend(
             [
-                {"params": backbone_parameters, "lr": args.backbone_lr},
                 {"params": head_parameters, "lr": args.head_lr},
                 {"params": list(cad_tower.parameters()), "lr": args.head_lr},
-            ],
+            ]
+        )
+        learning_rates.extend([args.head_lr, args.head_lr])
+        optimizer = torch.optim.AdamW(
+            parameter_groups,
             weight_decay=0.01,
         )
         scheduler = torch.optim.lr_scheduler.OneCycleLR(
             optimizer,
-            [args.backbone_lr, args.head_lr, args.head_lr],
+            learning_rates,
             total_steps=total_steps,
-            pct_start=0.05,
+            pct_start=args.warmup_fraction,
         )
         trainable = [parameter for group in optimizer.param_groups for parameter in group["params"]]
         history = []
         completed = 0
         for epoch in range(args.epochs):
-            text_encoder.train()
+            text_model.train()
             cad_tower.train()
             generator = torch.Generator().manual_seed(args.seed + epoch)
             order = torch.randperm(len(data["rows"]), generator=generator).tolist()
@@ -189,22 +228,32 @@ def main(argv=None):
                     break
                 start = step * global_batch + rank * args.per_device_batch
                 selected = order[start : start + args.per_device_batch]
-                tokenized = tokenizer(
-                    [INSTRUCTION + data["rows"][index][2] for index in selected],
-                    padding=True,
-                    truncation=True,
-                    max_length=args.max_length,
-                    return_tensors="pt",
-                ).to(device)
+                if len(selected) < 2:
+                    break
                 model_indices = torch.tensor(
                     [data["rows"][index][0] for index in selected],
                     dtype=torch.long,
                     device=device,
                 )
-                text_embeddings = text_encoder(
-                    tokenized.input_ids,
-                    tokenized.attention_mask,
-                )
+                if args.tuning == "lora":
+                    tokenized = tokenizer(
+                        [INSTRUCTION + data["rows"][index][2] for index in selected],
+                        padding=True,
+                        truncation=True,
+                        max_length=args.max_length,
+                        return_tensors="pt",
+                    ).to(device)
+                    text_embeddings = text_model(
+                        tokenized.input_ids,
+                        tokenized.attention_mask,
+                    )
+                else:
+                    feature_indices = torch.tensor(
+                        [train_feature_indices[index] for index in selected],
+                        dtype=torch.long,
+                        device=device,
+                    )
+                    text_embeddings = text_model(text_features[feature_indices])
                 cad_embeddings = cad_tower(vectors[model_indices])
                 all_text = gather_with_gradient(F.normalize(text_embeddings, dim=-1))
                 all_cad = gather_with_gradient(F.normalize(cad_embeddings, dim=-1))
@@ -235,7 +284,7 @@ def main(argv=None):
                     save_checkpoint(
                         args.output_dir,
                         cad_tower.module,
-                        text_encoder.module,
+                        text_model.module,
                         tokenizer,
                         mean,
                         std,

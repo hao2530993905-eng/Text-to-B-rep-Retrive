@@ -1,14 +1,19 @@
 # Text-to-B-rep Retrieval
-Text-to-CAD retrieval with a spectral CAD descriptor and a LoRA-adapted Qwen3-Embedding-0.6B text encoder.
+Text-to-CAD retrieval on Text2CAD with spectral CAD descriptors and Qwen3-Embedding.
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 
 ---
 
 ### What it is
-This repository contains the main retrieval experiment for Text2CAD and MMCAD-B. Both datasets use the same model structure: a 280-D geometric descriptor feeds a residual CAD tower, text feeds a Qwen3-Embedding-0.6B encoder with LoRA, and the two normalized embeddings are trained with symmetric one-pair contrastive loss.
+This repository contains two Text2CAD experiments:
 
-The data path starts from the original Text2CAD construction sequences or original MMCAD-B STEP files. Models, datasets, descriptor caches, adapters, checkpoints, and metrics stay outside Git.
+1. Qwen3-Embedding-4B with a frozen text encoder, FP32 projection training, 30 epochs, and batch 512.
+2. Qwen3-Embedding-0.6B with LoRA, 30 epochs, batch 512, and FP32 training.
+
+Both experiments use the same 280-D geometric descriptor, residual CAD tower, symmetric one-to-one contrastive loss, and pooled retrieval evaluation. No additional prediction heads or grouping logic are present.
+
+Models, datasets, descriptor caches, text-feature caches, adapters, checkpoints, and metrics remain outside Git.
 
 ---
 
@@ -21,7 +26,9 @@ python -m pip install -e .
 
 Download [Qwen3-Embedding-0.6B](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B) to the relative `models/Qwen3-Embedding-0.6B` directory.
 
-For Text2CAD, download the [Text2CAD dataset](https://huggingface.co/datasets/SadilKhan/Text2CAD) and the project resources from [Text2CAD](https://github.com/SadilKhan/Text2CAD). Use this layout:
+Download [Qwen3-Embedding-4B](https://huggingface.co/Qwen/Qwen3-Embedding-4B) to the relative `models/Qwen3-Embedding-4B` directory.
+
+Download [Text2CAD](https://huggingface.co/datasets/SadilKhan/Text2CAD) and the project resources from [Text2CAD](https://github.com/SadilKhan/Text2CAD). Use this layout:
 
 ```text
 data/Text2CAD/
@@ -31,25 +38,117 @@ data/Text2CAD/
   cad_seq.zip
 ```
 
-Build the Text2CAD cache:
+Build the descriptor and text-row cache:
 
 ```bash
 bash scripts/prepare_text2cad.sh
 ```
 
-Train the Text2CAD model:
+---
+
+### 4B frozen experiment
+The text features are encoded once with the 4B model in bf16, stored as FP32, and reused during training. The text projection and CAD tower are trained in FP32 without autocast.
+
+Create the frozen text-feature cache:
 
 ```bash
-bash scripts/train_text2cad.sh
+bash scripts/encode_text_4b.sh
 ```
 
-Evaluate the Text2CAD checkpoint:
+Train:
 
 ```bash
-bash scripts/evaluate_text2cad.sh
+bash scripts/train_text2cad_4b_frozen.sh
 ```
 
-For MMCAD-B, download the [MMCAD dataset](https://huggingface.co/datasets/exanos/MMCAD), including `mmcad_b/metadata.parquet` and the STEP shards. Place the metadata and extracted STEP files or tar archives under this layout:
+Evaluate:
+
+```bash
+bash scripts/evaluate_text2cad_4b_frozen.sh
+```
+
+The frozen preset uses:
+
+- one GPU
+- 512 samples per step
+- 1,215 steps per epoch
+- 30 epochs
+- 36,450 optimizer steps
+- head and CAD learning rate `3e-4`
+- AdamW with weight decay `0.01`
+- OneCycleLR warmup fraction `0.1`
+- temperature `0.05`
+- gradient clipping `1.0`
+- maximum text length `384`
+- seed `0`
+
+The expected output is stored under `runs/text2cad/4b_frozen`.
+
+---
+
+### 0.6B LoRA experiment
+The LoRA preset follows the 0.6B frozen run for epochs, batch size, schedule, precision, seed, and text length.
+
+Train:
+
+```bash
+bash scripts/train_text2cad_06b_lora.sh
+```
+
+Evaluate:
+
+```bash
+bash scripts/evaluate_text2cad_06b_lora.sh
+```
+
+The LoRA preset uses:
+
+- Qwen3-Embedding-0.6B
+- one GPU
+- 512 samples per step
+- 1,215 steps per epoch
+- 30 epochs
+- 36,450 optimizer steps
+- backbone learning rate `1e-4`
+- head and CAD learning rate `3e-4`
+- LoRA rank `16`
+- LoRA alpha `32`
+- LoRA dropout `0.05`
+- AdamW with weight decay `0.01`
+- OneCycleLR warmup fraction `0.1`
+- temperature `0.05`
+- gradient clipping `1.0`
+- maximum text length `384`
+- FP32 without autocast
+- seed `0`
+
+The expected output is stored under `runs/text2cad/06b_lora`.
+
+---
+
+### Validation
+Both evaluation scripts use the official Text2CAD test split, 1,000 candidate pools, 1,000 trials per text level, and report R@1, R@5, R@10, and MedR.
+
+Results are written to `test_metrics.json` beside the checkpoint.
+
+The 4B evaluation reads the saved text-feature cache. The 0.6B evaluation reads the saved LoRA adapter and base model.
+
+---
+
+### Output files
+
+| File | Purpose |
+|---|---|
+| `config.json` | Resolved training arguments and data counts |
+| `training_curve.csv` | Per-epoch loss and learning rate |
+| `adapter` | LoRA weights and tokenizer for the 0.6B run |
+| `retrieval.pt` | CAD tower, text projection, normalization statistics, and configuration |
+| `test_metrics.json` | Retrieval metrics |
+
+---
+
+### Optional MMCAD-B data preparation
+The data pipeline also supports MMCAD-B metadata and STEP files. Download the [MMCAD dataset](https://huggingface.co/datasets/exanos/MMCAD) and use this layout:
 
 ```text
 data/MMCAD-B/
@@ -65,71 +164,10 @@ Build the MMCAD-B cache:
 bash scripts/prepare_mmcad.sh
 ```
 
-Train and evaluate MMCAD-B:
-
-```bash
-bash scripts/train_mmcad.sh
-```
-
-```bash
-bash scripts/evaluate_mmcad.sh
-```
-
-Every script reads path and resource variables from the environment. The common variables are `PYTHON_BIN`, `CACHE`, `MODEL`, `OUTPUT_DIR`, `CHECKPOINT`, `NPROC`, `BATCH_PER_DEVICE`, `WORKERS`, `EPOCHS`, and `TEST_SIZE`.
-
----
-
-### Architecture
-```mermaid
-graph LR
-  A[Text2CAD sequence or MMCAD STEP] --> B[Geometry parser]
-  B --> C[280-D descriptor]
-  C --> D[CAD tower]
-  E[Cad description] --> F[Qwen3-Embedding-0.6B]
-  F --> G[LoRA adapter and projection]
-  D --> H[Symmetric contrastive loss]
-  G --> H
-  H --> I[Retrieval checkpoint]
-```
-
-The Text2CAD processor reads `cad_seq.zip` or an extracted `cad_seq` tree. The MMCAD-B processor validates single-solid STEP parts, verifies the selected planar cap as an extrusion profile, computes the descriptor, removes validation examples that duplicate training geometry, and samples a fixed test set.
-
----
-
-### Training protocol
-The Text2CAD preset uses two GPUs, 512 samples per device, a global contrastive batch of 1024, three epochs, LoRA rank 16, and LoRA alpha 32.
-
-The MMCAD-B preset uses seven GPUs, 96 samples per device, a global contrastive batch of 672, three epochs, LoRA rank 32, and LoRA alpha 64.
-
-Both presets use AdamW with weight decay `0.01`, OneCycleLR with warmup fraction `0.05`, temperature `0.05`, maximum text length `320`, gradient clipping at `1.0`, and symmetric in-batch contrastive loss. The text loss is one text description against its matching CAD model.
-
-Output files:
-
-| File | Purpose |
-|---|---|
-| `config.json` | Resolved training arguments and data counts |
-| `training_curve.csv` | Per-epoch loss and learning rate |
-| `adapter` | LoRA weights and tokenizer |
-| `retrieval.pt` | CAD tower, text projection, normalization statistics, and configuration |
-| `test_metrics.json` | Recall metrics generated by evaluation |
-
----
-
-### Configuration
-Run any command with `--help` for all accepted options:
-
-```bash
-cadret train --help
-```
-
-The descriptor cache is specific to its dataset and preprocessing settings. Rebuild the cache after changing the input files or descriptor code.
-
-Use `CUDA_VISIBLE_DEVICES` to select GPUs and set `NPROC` to the number of selected GPUs. Keep the global product `NPROC * BATCH_PER_DEVICE` fixed when changing the hardware allocation.
-
 ---
 
 ### Tests
-The tests use synthetic CAD data and do not need the downloaded datasets or model weights:
+The tests use synthetic CAD data and do not need downloaded datasets or model weights.
 
 ```bash
 python -m unittest discover -s tests -v
@@ -140,11 +178,12 @@ python -m unittest discover -s tests -v
 ### Documentation map
 | Document | What it covers |
 |---|---|
-| [README.md](README.md) | Dataset sources, setup, data processing, training, evaluation, and outputs |
+| [README.md](README.md) | Data sources, setup, the two training experiments, evaluation, and outputs |
 | [pyproject.toml](pyproject.toml) | Package metadata and dependencies |
-| [scripts/prepare_text2cad.sh](scripts/prepare_text2cad.sh) | Text2CAD descriptor cache |
-| [scripts/prepare_mmcad.sh](scripts/prepare_mmcad.sh) | MMCAD-B STEP descriptor cache |
-| [scripts/train_text2cad.sh](scripts/train_text2cad.sh) | Text2CAD LoRA training |
-| [scripts/train_mmcad.sh](scripts/train_mmcad.sh) | MMCAD-B LoRA training |
-| [scripts/evaluate_text2cad.sh](scripts/evaluate_text2cad.sh) | Text2CAD retrieval evaluation |
-| [scripts/evaluate_mmcad.sh](scripts/evaluate_mmcad.sh) | MMCAD-B retrieval evaluation |
+| [scripts/prepare_text2cad.sh](scripts/prepare_text2cad.sh) | Text2CAD descriptor and text cache |
+| [scripts/encode_text_4b.sh](scripts/encode_text_4b.sh) | Frozen 4B text-feature cache |
+| [scripts/train_text2cad_4b_frozen.sh](scripts/train_text2cad_4b_frozen.sh) | 4B frozen training |
+| [scripts/train_text2cad_06b_lora.sh](scripts/train_text2cad_06b_lora.sh) | 0.6B LoRA training |
+| [scripts/evaluate_text2cad_4b_frozen.sh](scripts/evaluate_text2cad_4b_frozen.sh) | 4B frozen evaluation |
+| [scripts/evaluate_text2cad_06b_lora.sh](scripts/evaluate_text2cad_06b_lora.sh) | 0.6B LoRA evaluation |
+| [scripts/prepare_mmcad.sh](scripts/prepare_mmcad.sh) | Optional MMCAD-B STEP cache |

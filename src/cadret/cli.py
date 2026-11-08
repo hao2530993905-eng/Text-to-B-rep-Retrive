@@ -6,7 +6,8 @@ import sys
 COMMANDS = {
     "prepare-text2cad": ("cadret.prepare", "text2cad_command", "Build Text2CAD data"),
     "prepare-mmcad": ("cadret.prepare", "mmcad_command", "Build MMCAD-B data"),
-    "train": ("cadret.train", "main", "Train a 0.6B LoRA model"),
+    "encode-text": ("cadret.text_features", "main", "Cache frozen text features"),
+    "train": ("cadret.train", "main", "Train a frozen or LoRA model"),
     "evaluate": ("cadret.evaluate", "main", "Evaluate a checkpoint"),
 }
 

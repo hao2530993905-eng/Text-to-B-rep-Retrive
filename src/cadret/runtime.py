@@ -94,22 +94,23 @@ def seed_everything(seed):
 def save_checkpoint(
     output_directory: Path,
     cad_tower,
-    text_encoder,
+    text_model,
     tokenizer,
     mean,
     std,
     config,
 ):
     output_directory.mkdir(parents=True, exist_ok=True)
-    adapter_directory = output_directory / "adapter"
-    text_encoder.backbone.save_pretrained(adapter_directory)
-    tokenizer.save_pretrained(adapter_directory)
+    if config["tuning"] == "lora":
+        adapter_directory = output_directory / "adapter"
+        text_model.backbone.save_pretrained(adapter_directory)
+        tokenizer.save_pretrained(adapter_directory)
     checkpoint = {
         "cad_tower": {name: value.detach().cpu() for name, value in cad_tower.state_dict().items()},
         "text_heads": {
             name: {
                 key: value.detach().cpu()
-                for key, value in getattr(text_encoder, name).state_dict().items()
+                for key, value in getattr(text_model, name).state_dict().items()
             }
             for name in ("trunk", "projection")
         },

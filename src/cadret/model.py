@@ -43,6 +43,30 @@ class CADTower(nn.Module):
         return self.output(hidden)
 
 
+class TextProjection(nn.Module):
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int = 1024,
+        output_dim: int = 512,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        self.trunk = nn.Sequential(
+            nn.LayerNorm(input_dim),
+            nn.Linear(input_dim, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.LayerNorm(hidden_dim),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+        )
+        self.projection = nn.Linear(hidden_dim, output_dim)
+
+    def forward(self, values: torch.Tensor) -> torch.Tensor:
+        return self.projection(self.trunk(values))
+
+
 class TextEncoder(nn.Module):
     def __init__(
         self,
@@ -53,6 +77,7 @@ class TextEncoder(nn.Module):
         output_dim: int = 512,
         dropout: float = 0.1,
         adapter: str | Path | None = None,
+        dtype: torch.dtype = torch.float32,
     ):
         super().__init__()
         from peft import LoraConfig, PeftModel, get_peft_model
@@ -60,7 +85,7 @@ class TextEncoder(nn.Module):
 
         backbone = AutoModel.from_pretrained(
             model,
-            dtype=torch.bfloat16,
+            dtype=dtype,
             trust_remote_code=True,
         )
         backbone.config.use_cache = False

@@ -11,7 +11,7 @@ import torch.nn.functional as F
 
 from .config import DATASET_LEVELS, INSTRUCTION
 from .data import load_split
-from .model import CADTower, TextEncoder
+from .model import CADTower, TextEncoder, TextProjection
 from .runtime import gather_variable, load_checkpoint, pooled_recall, restore_text_heads
 
 
@@ -29,6 +29,7 @@ def build_parser():
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--model")
     parser.add_argument("--adapter", type=Path)
+    parser.add_argument("--text-features", type=Path)
     parser.add_argument("--split", default="test")
     parser.add_argument("--levels")
     parser.add_argument("--batch-size", type=positive_int, default=64)
@@ -62,23 +63,40 @@ def main(argv=None):
     dist.init_process_group("nccl")
     try:
         rank = dist.get_rank()
-        from transformers import AutoTokenizer
+        tuning = config["tuning"]
+        dtype = torch.float32 if config["precision"] == "fp32" else torch.bfloat16
+        tokenizer = None
+        text_features = None
+        feature_lookup = None
+        if tuning == "lora":
+            from transformers import AutoTokenizer
 
-        adapter = args.adapter or args.checkpoint.parent / "adapter"
-        if not adapter.is_dir():
-            raise FileNotFoundError(f"adapter not found: {adapter}")
-        tokenizer = AutoTokenizer.from_pretrained(adapter, trust_remote_code=True)
-        tokenizer.padding_side = "left"
-        text_encoder = TextEncoder(
-            args.model or config["model"],
-            lora_rank=config["lora_rank"],
-            lora_alpha=config["lora_alpha"],
-            adapter=adapter,
-        ).to(device)
-        restore_text_heads(text_encoder, checkpoint)
+            adapter = args.adapter or args.checkpoint.parent / "adapter"
+            if not adapter.is_dir():
+                raise FileNotFoundError(f"adapter not found: {adapter}")
+            tokenizer = AutoTokenizer.from_pretrained(adapter, trust_remote_code=True)
+            tokenizer.padding_side = "left"
+            text_model = TextEncoder(
+                args.model or config["model"],
+                lora_rank=config["lora_rank"],
+                lora_alpha=config["lora_alpha"],
+                adapter=adapter,
+                dtype=dtype,
+            ).to(device)
+        else:
+            text_features_path = args.text_features or Path(config["text_features"])
+            cached_features = torch.load(
+                text_features_path,
+                map_location="cpu",
+                weights_only=False,
+            )
+            text_features = cached_features["features"].float().to(device)
+            feature_lookup = {text: index for index, text in enumerate(cached_features["texts"])}
+            text_model = TextProjection(text_features.shape[1]).to(device)
+        restore_text_heads(text_model, checkpoint)
         cad_tower = CADTower().to(device)
         cad_tower.load_state_dict(checkpoint["cad_tower"])
-        text_encoder.eval()
+        text_model.eval()
         cad_tower.eval()
         values = (data["vectors"] - checkpoint["mean"]) / checkpoint["std"]
         lower = rank * len(data["rows"]) // dist.get_world_size()
@@ -87,26 +105,35 @@ def main(argv=None):
         local_queries = torch.zeros(len(local_rows), 512, device=device)
         with torch.no_grad():
             gallery = F.normalize(cad_tower(values.to(device)), dim=-1).cpu()
-            for start in range(0, len(local_rows), args.batch_size):
-                selected = range(start, min(start + args.batch_size, len(local_rows)))
-                tokenized = tokenizer(
-                    [INSTRUCTION + local_rows[index][2] for index in selected],
-                    padding=True,
-                    truncation=True,
-                    max_length=config["max_length"],
-                    return_tensors="pt",
-                ).to(device)
-                encoded = text_encoder(
-                    tokenized.input_ids,
-                    tokenized.attention_mask,
+            if tuning == "lora":
+                for start in range(0, len(local_rows), args.batch_size):
+                    selected = list(range(start, min(start + args.batch_size, len(local_rows))))
+                    tokenized = tokenizer(
+                        [INSTRUCTION + local_rows[index][2] for index in selected],
+                        padding=True,
+                        truncation=True,
+                        max_length=config["max_length"],
+                        return_tensors="pt",
+                    ).to(device)
+                    encoded = text_model(
+                        tokenized.input_ids,
+                        tokenized.attention_mask,
+                    )
+                    local_queries[selected] = F.normalize(encoded, dim=-1)
+            else:
+                feature_indices = torch.tensor(
+                    [feature_lookup[row[2]] for row in local_rows],
+                    dtype=torch.long,
+                    device=device,
                 )
-                local_queries[list(selected)] = F.normalize(encoded, dim=-1)
+                encoded = text_model(text_features[feature_indices])
+                local_queries[:] = F.normalize(encoded, dim=-1)
         queries = gather_variable(local_queries).cpu()
         if rank == 0:
             results, digest = pooled_recall(
                 queries,
                 gallery,
-                local_rows,
+                data["rows"],
                 levels,
                 min(args.pool_size, len(gallery)),
                 args.trials,

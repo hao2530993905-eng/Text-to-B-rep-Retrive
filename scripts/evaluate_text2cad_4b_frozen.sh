@@ -1,17 +1,16 @@
 PYTHON_BIN="${PYTHON_BIN:-python}"
 CACHE="${CACHE:-runs/text2cad/cache.pt}"
-MODEL="${MODEL:-models/Qwen3-Embedding-0.6B}"
-CHECKPOINT="${CHECKPOINT:-runs/text2cad/lora/retrieval.pt}"
-NPROC="${NPROC:-1}"
+CHECKPOINT="${CHECKPOINT:-runs/text2cad/4b_frozen/retrieval.pt}"
+TEXT_FEATURES="${TEXT_FEATURES:-runs/text2cad/text_features_4b.pt}"
 
 "$PYTHON_BIN" -m torch.distributed.run \
   --standalone \
-  --nproc_per_node "$NPROC" \
+  --nproc_per_node 1 \
   -m cadret evaluate \
   --dataset text2cad \
   --cache "$CACHE" \
-  --model "$MODEL" \
   --checkpoint "$CHECKPOINT" \
+  --text-features "$TEXT_FEATURES" \
   --split test \
   --levels abstract,beginner,intermediate,expert \
   --batch-size 64 \

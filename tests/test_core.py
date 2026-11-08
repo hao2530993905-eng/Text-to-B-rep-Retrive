@@ -17,7 +17,8 @@ import torch
 from cadret.config import DATASET_LEVELS
 from cadret.data import load_split
 from cadret.geometry import describe_sequence, descriptor_vector, prism_descriptor
-from cadret.runtime import pooled_recall, symmetric_info_nce
+from cadret.model import CADTower, TextProjection
+from cadret.runtime import pooled_recall, save_checkpoint, symmetric_info_nce
 from cadret.text2cad import prepare_text2cad
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -109,6 +110,22 @@ class CoreTests(unittest.TestCase):
         loss = symmetric_info_nce(text, cad, 0.05)
         loss.backward()
         self.assertTrue(torch.isfinite(loss))
+
+    def test_frozen_checkpoint(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            save_checkpoint(
+                output,
+                CADTower(hidden_dim=16, output_dim=8, blocks=1, dropout=0),
+                TextProjection(12, hidden_dim=16, output_dim=8, dropout=0),
+                None,
+                torch.zeros(280),
+                torch.ones(280),
+                {"tuning": "frozen"},
+            )
+            checkpoint = torch.load(output / "retrieval.pt", weights_only=False)
+            self.assertEqual(checkpoint["text_heads"]["projection"]["weight"].shape, (8, 16))
+            self.assertFalse((output / "adapter").exists())
 
     def test_metrics(self):
         embeddings = torch.eye(12)
