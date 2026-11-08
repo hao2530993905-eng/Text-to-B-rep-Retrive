@@ -4,10 +4,12 @@ MODEL="${MODEL:-models/Qwen3-Embedding-4B}"
 TEXT_FEATURES="${TEXT_FEATURES:-runs/text2cad/text_features_4b.pt}"
 OUTPUT_DIR="${OUTPUT_DIR:-runs/text2cad/4b_frozen}"
 EPOCHS="${EPOCHS:-30}"
+NPROC="${NPROC:-8}"
+BATCH_PER_DEVICE="${BATCH_PER_DEVICE:-64}"
 
 "$PYTHON_BIN" -m torch.distributed.run \
   --standalone \
-  --nproc_per_node 1 \
+  --nproc_per_node "$NPROC" \
   -m cadret train \
   --dataset text2cad \
   --tuning frozen \
@@ -18,7 +20,7 @@ EPOCHS="${EPOCHS:-30}"
   --output-dir "$OUTPUT_DIR" \
   --levels abstract,beginner,intermediate,expert \
   --epochs "$EPOCHS" \
-  --per-device-batch 512 \
+  --per-device-batch "$BATCH_PER_DEVICE" \
   --head-lr 3e-4 \
   --temperature 0.05 \
   --warmup-fraction 0.1 \

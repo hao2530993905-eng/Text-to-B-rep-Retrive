@@ -101,11 +101,7 @@ def main(argv=None):
         primary = rank == 0
         seed_everything(args.seed)
         global_batch = args.per_device_batch * world_size
-        steps_per_epoch = (
-            math.ceil(len(data["rows"]) / global_batch)
-            if world_size == 1
-            else len(data["rows"]) // global_batch
-        )
+        steps_per_epoch = math.ceil(len(data["rows"]) / global_batch)
         if steps_per_epoch < 1:
             raise ValueError("global batch is larger than the training data")
         planned_steps = steps_per_epoch * args.epochs
@@ -255,20 +251,63 @@ def main(argv=None):
                     )
                     text_embeddings = text_model(text_features[feature_indices])
                 cad_embeddings = cad_tower(vectors[model_indices])
-                all_text = gather_with_gradient(F.normalize(text_embeddings, dim=-1))
-                all_cad = gather_with_gradient(F.normalize(cad_embeddings, dim=-1))
-                loss = symmetric_info_nce(all_text, all_cad, args.temperature)
+                text_embeddings = F.normalize(text_embeddings, dim=-1)
+                cad_embeddings = F.normalize(cad_embeddings, dim=-1)
+                local_size = torch.tensor(
+                    [len(selected)],
+                    dtype=torch.long,
+                    device=device,
+                )
+                sizes = [torch.zeros_like(local_size) for _ in range(world_size)]
+                dist.all_gather(sizes, local_size)
+                lengths = [int(value.item()) for value in sizes]
+                maximum = max(lengths)
+                if len(selected) < maximum:
+                    padding = maximum - len(selected)
+                    text_embeddings = torch.cat(
+                        [
+                            text_embeddings,
+                            text_embeddings.new_zeros(
+                                padding,
+                                text_embeddings.shape[1],
+                            ),
+                        ],
+                        dim=0,
+                    )
+                    cad_embeddings = torch.cat(
+                        [
+                            cad_embeddings,
+                            cad_embeddings.new_zeros(
+                                padding,
+                                cad_embeddings.shape[1],
+                            ),
+                        ],
+                        dim=0,
+                    )
+                all_text = gather_with_gradient(text_embeddings)
+                all_cad = gather_with_gradient(cad_embeddings)
+                valid = torch.cat(
+                    [torch.arange(maximum, device=device) < length for length in lengths]
+                )
+                all_text = all_text[valid]
+                all_cad = all_cad[valid]
+                objective = symmetric_info_nce(
+                    all_text,
+                    all_cad,
+                    args.temperature,
+                )
+                loss = objective * world_size
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(trainable, 1.0)
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
                 scheduler.step()
                 completed += 1
-                epoch_loss += float(loss.detach())
+                epoch_loss += float(objective.detach())
                 epoch_steps += 1
                 if primary:
                     iterator.set_postfix(
-                        loss=f"{float(loss.detach()):.4f}",
+                        loss=f"{float(objective.detach()):.4f}",
                         lr=f"{scheduler.get_last_lr()[0]:.2e}",
                     )
             if epoch_steps:

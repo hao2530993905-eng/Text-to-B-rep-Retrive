@@ -3,10 +3,12 @@ CACHE="${CACHE:-runs/text2cad/cache.pt}"
 MODEL="${MODEL:-models/Qwen3-Embedding-0.6B}"
 OUTPUT_DIR="${OUTPUT_DIR:-runs/text2cad/06b_lora}"
 EPOCHS="${EPOCHS:-30}"
+NPROC="${NPROC:-8}"
+BATCH_PER_DEVICE="${BATCH_PER_DEVICE:-64}"
 
 "$PYTHON_BIN" -m torch.distributed.run \
   --standalone \
-  --nproc_per_node 1 \
+  --nproc_per_node "$NPROC" \
   -m cadret train \
   --dataset text2cad \
   --tuning lora \
@@ -16,7 +18,7 @@ EPOCHS="${EPOCHS:-30}"
   --output-dir "$OUTPUT_DIR" \
   --levels abstract,beginner,intermediate,expert \
   --epochs "$EPOCHS" \
-  --per-device-batch 512 \
+  --per-device-batch "$BATCH_PER_DEVICE" \
   --backbone-lr 1e-4 \
   --head-lr 3e-4 \
   --temperature 0.05 \

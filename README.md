@@ -8,8 +8,8 @@ Text-to-CAD retrieval on Text2CAD with spectral CAD descriptors and Qwen3-Embedd
 ### What it is
 This repository contains two Text2CAD experiments:
 
-1. Qwen3-Embedding-4B with a frozen text encoder, FP32 projection training, 30 epochs, and batch 512.
-2. Qwen3-Embedding-0.6B with LoRA, 30 epochs, batch 512, and FP32 training.
+1. Qwen3-Embedding-4B with a frozen text encoder, FP32 projection training, 30 epochs, and global batch 512.
+2. Qwen3-Embedding-0.6B with LoRA, 30 epochs, global batch 512, and FP32 training.
 
 Both experiments use the same 280-D geometric descriptor, residual CAD tower, symmetric one-to-one contrastive loss, and pooled retrieval evaluation. No additional prediction heads or grouping logic are present.
 
@@ -47,7 +47,7 @@ bash scripts/prepare_text2cad.sh
 ---
 
 ### 4B frozen experiment
-The text features are encoded once with the 4B model in bf16, stored as FP32, and reused during training. The text projection and CAD tower are trained in FP32 without autocast.
+The text features are encoded once across eight GPUs with the 4B model in bf16, stored as FP32, and reused during training. The text projection and CAD tower are trained in FP32 without autocast.
 
 Create the frozen text-feature cache:
 
@@ -69,8 +69,9 @@ bash scripts/evaluate_text2cad_4b_frozen.sh
 
 The frozen preset uses:
 
-- one GPU
-- 512 samples per step
+- eight GPUs
+- 64 samples per device
+- 512 samples per global step
 - 1,215 steps per epoch
 - 30 epochs
 - 36,450 optimizer steps
@@ -104,8 +105,9 @@ bash scripts/evaluate_text2cad_06b_lora.sh
 The LoRA preset uses:
 
 - Qwen3-Embedding-0.6B
-- one GPU
-- 512 samples per step
+- eight GPUs
+- 64 samples per device
+- 512 samples per global step
 - 1,215 steps per epoch
 - 30 epochs
 - 36,450 optimizer steps
@@ -145,19 +147,19 @@ mkdir -p logs
 Start 4B feature encoding:
 
 ```bash
-nohup env CUDA_VISIBLE_DEVICES=0 bash scripts/encode_text_4b.sh > logs/encode_4b.log 2>&1 &
+nohup env CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 bash scripts/encode_text_4b.sh > logs/encode_4b.log 2>&1 &
 ```
 
 Start 4B frozen training after encoding finishes:
 
 ```bash
-nohup env CUDA_VISIBLE_DEVICES=0 bash scripts/train_text2cad_4b_frozen.sh > logs/train_4b_frozen.log 2>&1 &
+nohup env CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 bash scripts/train_text2cad_4b_frozen.sh > logs/train_4b_frozen.log 2>&1 &
 ```
 
 Start 0.6B LoRA training:
 
 ```bash
-nohup env CUDA_VISIBLE_DEVICES=0 bash scripts/train_text2cad_06b_lora.sh > logs/train_06b_lora.log 2>&1 &
+nohup env CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 bash scripts/train_text2cad_06b_lora.sh > logs/train_06b_lora.log 2>&1 &
 ```
 
 Follow a log:
